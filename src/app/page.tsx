@@ -19,7 +19,8 @@ import {
   Sparkles,
   Send,
   Plus,
-  Zap
+  Zap,
+  HelpCircle
 } from 'lucide-react';
 
 interface Perspective {
@@ -53,6 +54,7 @@ interface PovSection {
 
 interface StructuredAnalysis {
   title: string;
+  why?: string;
   overview: BulletPoint[];
   perspectives: PovSection[];
 }
@@ -60,6 +62,8 @@ interface StructuredAnalysis {
 // Collapsible Bullet Item Component
 function CollapsibleBullet({ item, index, accentClass }: { item: BulletPoint; index: number; accentClass?: string }) {
   const [isOpen, setIsOpen] = useState(false);
+
+  if (!item || !item.bullet) return null;
 
   return (
     <div className={`collapsible-bullet ${isOpen ? 'open' : ''}`}>
@@ -74,7 +78,7 @@ function CollapsibleBullet({ item, index, accentClass }: { item: BulletPoint; in
         <span className="bullet-text">{item.bullet}</span>
       </button>
       
-      {isOpen && (
+      {isOpen && item.detail && (
         <div className="bullet-detail animate-slide-down">
           <p className="detail-text">{item.detail}</p>
           {item.impact && (
@@ -118,73 +122,161 @@ function extractThinkingAndJson(summary: string) {
   return { thinking: thinking.trim(), jsonPart: jsonPart.trim() };
 }
 
-// Try to parse the summary as structured JSON
+// Helper to robustly parse partial/incomplete JSON strings during streaming
+function parsePartialJson(jsonStr: string): any {
+  jsonStr = jsonStr.trim();
+  
+  // Remove markdown code block fences if present but not fully closed
+  if (jsonStr.startsWith('```')) {
+    const lines = jsonStr.split('\n');
+    if (lines[0].startsWith('```')) {
+      lines.shift();
+    }
+    if (lines.length > 0 && lines[lines.length - 1].trim() === '```') {
+      lines.pop();
+    }
+    jsonStr = lines.join('\n').trim();
+  }
+
+  // Find the first '{' to start parsing
+  const firstBrace = jsonStr.indexOf('{');
+  if (firstBrace === -1) return null;
+  jsonStr = jsonStr.substring(firstBrace);
+
+  let insideString = false;
+  let isEscaped = false;
+  const bracketStack: string[] = [];
+  let cleanStr = '';
+
+  for (let i = 0; i < jsonStr.length; i++) {
+    const char = jsonStr[i];
+    cleanStr += char;
+
+    if (isEscaped) {
+      isEscaped = false;
+      continue;
+    }
+
+    if (char === '\\') {
+      isEscaped = true;
+      continue;
+    }
+
+    if (char === '"') {
+      insideString = !insideString;
+      continue;
+    }
+
+    if (!insideString) {
+      if (char === '{' || char === '[') {
+        bracketStack.push(char);
+      } else if (char === '}') {
+        if (bracketStack[bracketStack.length - 1] === '{') {
+          bracketStack.pop();
+        }
+      } else if (char === ']') {
+        if (bracketStack[bracketStack.length - 1] === '[') {
+          bracketStack.pop();
+        }
+      }
+    }
+  }
+
+  // 1. Close open string if we ended inside one
+  if (insideString) {
+    cleanStr += '"';
+  }
+
+  // 2. Clean up any trailing colon or comma before closing brackets
+  let tempStr = cleanStr.trim();
+  while (tempStr.endsWith(':') || tempStr.endsWith(',')) {
+    tempStr = tempStr.slice(0, -1).trim();
+  }
+  
+  const getClosedJson = (s: string) => {
+    let closed = s;
+    let openStr = false;
+    let esc = false;
+    const stack: string[] = [];
+    
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (esc) { esc = false; continue; }
+      if (c === '\\') { esc = true; continue; }
+      if (c === '"') { openStr = !openStr; continue; }
+      if (!openStr) {
+        if (c === '{' || c === '[') stack.push(c);
+        else if (c === '}') { if (stack[stack.length - 1] === '{') stack.pop(); }
+        else if (c === ']') { if (stack[stack.length - 1] === '[') stack.pop(); }
+      }
+    }
+    
+    if (openStr) closed += '"';
+    
+    let t = closed.trim();
+    while (t.endsWith(':') || t.endsWith(',')) {
+      t = t.slice(0, -1).trim();
+    }
+    closed = t;
+
+    for (let i = stack.length - 1; i >= 0; i--) {
+      if (stack[i] === '{') closed += '}';
+      if (stack[i] === '[') closed += ']';
+    }
+    return closed;
+  };
+
+  try {
+    const closed = getClosedJson(tempStr);
+    return JSON.parse(closed);
+  } catch (e) {
+    // If parsing fails, the last property value might be incomplete or missing.
+    // Progressively roll back to the last safe comma or opening delimiter and retry.
+    let currentStr = tempStr;
+    for (let attempts = 0; attempts < 15; attempts++) {
+      const lastComma = Math.max(currentStr.lastIndexOf(','), currentStr.lastIndexOf('{'), currentStr.lastIndexOf('['));
+      if (lastComma <= 0) break;
+      
+      currentStr = currentStr.substring(0, lastComma);
+      let cleanCurrent = currentStr.trim();
+      while (cleanCurrent.endsWith(':') || cleanCurrent.endsWith(',')) {
+        cleanCurrent = cleanCurrent.slice(0, -1).trim();
+      }
+      
+      try {
+        const closed = getClosedJson(cleanCurrent);
+        const parsed = JSON.parse(closed);
+        if (parsed && typeof parsed === 'object') {
+          return parsed;
+        }
+      } catch {
+        // keep attempting
+      }
+    }
+  }
+
+  return null;
+}
+
+// Try to parse the summary as structured JSON (supporting partial streams)
 function parseStructuredAnalysis(summary: string): StructuredAnalysis | null {
   if (!summary) return null;
   
   const { jsonPart } = extractThinkingAndJson(summary);
-  if (!jsonPart || jsonPart.length < 10) return null;
+  if (!jsonPart || jsonPart.length < 5) return null;
   
-  // Helper: attempt parse and validate
-  const tryParse = (str: string): StructuredAnalysis | null => {
-    try {
-      const parsed = JSON.parse(str);
-      if (parsed && parsed.overview && Array.isArray(parsed.overview) && parsed.perspectives && Array.isArray(parsed.perspectives)) {
-        return parsed as StructuredAnalysis;
-      }
-      // Also accept if it has title + perspectives (some models skip overview)
-      if (parsed && parsed.title && parsed.perspectives && Array.isArray(parsed.perspectives)) {
-        return { ...parsed, overview: parsed.overview || [] } as StructuredAnalysis;
-      }
-    } catch {
-      // parse failed
+  try {
+    const parsed = parsePartialJson(jsonPart);
+    if (parsed && typeof parsed === 'object') {
+      return {
+        title: parsed.title || 'Analyzing Topic...',
+        why: parsed.why || '',
+        overview: Array.isArray(parsed.overview) ? parsed.overview : [],
+        perspectives: Array.isArray(parsed.perspectives) ? parsed.perspectives : []
+      };
     }
-    return null;
-  };
-
-  let jsonStr = jsonPart.trim();
-  
-  // 1. Remove markdown code fences if present
-  const fenceMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fenceMatch) {
-    jsonStr = fenceMatch[1].trim();
-  }
-
-  // 2. Try direct parse
-  let result = tryParse(jsonStr);
-  if (result) return result;
-
-  // 3. Try to extract JSON object from the string (LLM might add text before/after)
-  const jsonObjMatch = jsonStr.match(/\{[\s\S]*\}/);
-  if (jsonObjMatch) {
-    result = tryParse(jsonObjMatch[0]);
-    if (result) return result;
-
-    // 4. Try fixing common LLM JSON issues
-    let fixedJson = jsonObjMatch[0]
-      .replace(/,\s*}/g, '}')       // Remove trailing commas before }
-      .replace(/,\s*\]/g, ']')      // Remove trailing commas before ]
-      .replace(/'/g, '"')           // Replace single quotes with double quotes
-      .replace(/\n/g, ' ')          // Remove newlines inside strings
-      .replace(/\t/g, ' ');         // Remove tabs
-
-    result = tryParse(fixedJson);
-    if (result) return result;
-
-    // 5. Try to fix unclosed brackets/braces
-    let openBraces = 0, openBrackets = 0;
-    for (const ch of fixedJson) {
-      if (ch === '{') openBraces++;
-      if (ch === '}') openBraces--;
-      if (ch === '[') openBrackets++;
-      if (ch === ']') openBrackets--;
-    }
-    // Add missing closing characters
-    while (openBrackets > 0) { fixedJson += ']'; openBrackets--; }
-    while (openBraces > 0) { fixedJson += '}'; openBraces--; }
-    
-    result = tryParse(fixedJson);
-    if (result) return result;
+  } catch (err) {
+    // ignore
   }
 
   return null;
@@ -197,30 +289,58 @@ function StructuredAnalysisView({ data }: { data: StructuredAnalysis }) {
       {/* Title */}
       <h3 className="analysis-title">{data.title}</h3>
       
+      {/* Why Section */}
+      {data.why && (
+        <div className="analysis-section" style={{
+          background: 'rgba(56, 189, 248, 0.02)',
+          border: '1px dashed rgba(56, 189, 248, 0.15)',
+          borderRadius: '8px',
+          padding: '1rem',
+          marginTop: '0.5rem',
+          marginBottom: '0.5rem'
+        }}>
+          <div className="section-label" style={{ color: 'var(--accent-color)', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+            <HelpCircle size={14} />
+            <span>Why is this happening?</span>
+          </div>
+          <p style={{
+            fontSize: '0.85rem',
+            color: 'var(--text-secondary)',
+            lineHeight: 1.6
+          }}>
+            {data.why}
+          </p>
+        </div>
+      )}
+      
       {/* Overview Section */}
-      <div className="analysis-section">
-        <div className="section-label">
-          <BookOpen size={14} />
-          <span>Overview</span>
+      {data.overview && data.overview.length > 0 && (
+        <div className="analysis-section">
+          <div className="section-label">
+            <BookOpen size={14} />
+            <span>Overview</span>
+          </div>
+          <div className="bullet-list">
+            {data.overview.map((item, idx) => (
+              <CollapsibleBullet key={idx} item={item} index={idx} />
+            ))}
+          </div>
         </div>
-        <div className="bullet-list">
-          {data.overview.map((item, idx) => (
-            <CollapsibleBullet key={idx} item={item} index={idx} />
-          ))}
-        </div>
-      </div>
+      )}
 
       {/* Perspectives / POV Sections */}
-      <div className="pov-container">
-        <div className="section-label" style={{ marginBottom: '0.75rem' }}>
-          <Compass size={14} />
-          <span>Perspectives</span>
+      {data.perspectives && data.perspectives.length > 0 && (
+        <div className="pov-container">
+          <div className="section-label" style={{ marginBottom: '0.75rem' }}>
+            <Compass size={14} />
+            <span>Perspectives</span>
+          </div>
+          
+          {data.perspectives.map((pov, povIdx) => (
+            <PovCard key={povIdx} pov={pov} index={povIdx} />
+          ))}
         </div>
-        
-        {data.perspectives.map((pov, povIdx) => (
-          <PovCard key={povIdx} pov={pov} index={povIdx} />
-        ))}
-      </div>
+      )}
     </div>
   );
 }
@@ -230,6 +350,9 @@ function PovCard({ pov, index }: { pov: PovSection; index: number }) {
   const [isExpanded, setIsExpanded] = useState(true);
   const colorClasses = ['pov-blue', 'pov-rose', 'pov-amber', 'pov-emerald', 'pov-violet'];
   const colorClass = colorClasses[index % colorClasses.length];
+
+  if (!pov || !pov.name) return null;
+  const points = Array.isArray(pov.points) ? pov.points : [];
 
   return (
     <div className={`pov-card ${colorClass}`}>
@@ -261,7 +384,7 @@ function PovCard({ pov, index }: { pov: PovSection; index: number }) {
               <strong>Perspective:</strong> {pov.stance}
             </p>
           )}
-          {pov.points.map((point, ptIdx) => (
+          {points.map((point, ptIdx) => (
             <CollapsibleBullet key={ptIdx} item={point} index={ptIdx} accentClass={colorClass} />
           ))}
         </div>
@@ -319,10 +442,12 @@ export default function ChatbotPage() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // 2. Auto-scroll to bottom of chat when state changes
+  // 2. Auto-scroll to bottom of chat only when starting a new analysis
   useEffect(() => {
-    messageEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [activeAnalysis, loading, loadingStep, analysisError, isStreaming]);
+    if (loading) {
+      messageEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [loading]);
 
   // 3. Detect source platform from URL input
   useEffect(() => {
@@ -410,8 +535,19 @@ export default function ChatbotPage() {
   const triggerAnalysis = async (targetUrl: string) => {
     setLoading(true);
     setAnalysisError(null);
-    setActiveAnalysis(null);
     setLoadingStep(1);
+
+    const isUrl = targetUrl.startsWith('http://') || targetUrl.startsWith('https://') || targetUrl.startsWith('www.');
+    const initialRecord: Analysis = {
+      id: `analysis-${Date.now()}`,
+      link: targetUrl,
+      source: isUrl ? detectedSource : 'manual',
+      content: '',
+      summary: '',
+      perspectives: [],
+      created_at: new Date().toISOString()
+    };
+    setActiveAnalysis(initialRecord);
 
     try {
       setLoadingStep(2); // Skip to LLM step immediately — no artificial delay
@@ -440,13 +576,13 @@ export default function ChatbotPage() {
 
       // Create the streaming analysis record
       const streamingRecord: Analysis = {
-        id: `streaming-${Date.now()}`,
+        id: initialRecord.id,
         link: targetUrl,
         source: isUrl ? detectedSource : 'manual',
         content: '',
         summary: '',
         perspectives: [],
-        created_at: new Date().toISOString()
+        created_at: initialRecord.created_at
       };
       
       setActiveAnalysis(streamingRecord);
@@ -525,6 +661,7 @@ export default function ChatbotPage() {
       fetchHistory(session.user.id);
     } catch (err: any) {
       setAnalysisError(err.message || 'Could not analyze post. Check that your local Ollama is running.');
+      setActiveAnalysis(null);
     } finally {
       setLoading(false);
       setLoadingStep(0);
@@ -1042,9 +1179,18 @@ create policy "Allow users to insert their own analyses" on public.analyses for 
                   </div>
 
                   <div style={{ marginTop: '1rem' }}>
-                    {(() => {
-                      const { thinking, jsonPart } = extractThinkingAndJson(activeAnalysis.summary);
-                      const structuredData = parseStructuredAnalysis(activeAnalysis.summary);
+                    {(loading || isStreaming) ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                        {/* Progress loading bar */}
+                        <div className="thinking-progress-container">
+                          <div className="thinking-progress-bar"></div>
+                        </div>
+                        <span className="thinking-progress-text">
+                          Analyzing and generating perspectives. It may take up to 1 minute...
+                        </span>
+                      </div>
+                    ) : (() => {
+                      const { thinking } = extractThinkingAndJson(activeAnalysis.summary);
                       
                       return (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
@@ -1068,84 +1214,21 @@ create policy "Allow users to insert their own analyses" on public.analyses for 
                                 fontSize: '0.72rem', 
                                 textTransform: 'uppercase', 
                                 letterSpacing: '0.05em', 
-                                color: (isStreaming && !jsonPart) ? 'var(--accent-color)' : 'var(--text-muted)', 
+                                color: 'var(--text-muted)', 
                                 marginBottom: '0.4rem', 
                                 display: 'flex', 
                                 alignItems: 'center', 
                                 gap: '0.4rem' 
                               }}>
-                                {(isStreaming && !jsonPart) ? (
-                                  <Loader2 size={12} className="animate-spin" style={{ animation: 'spin 1s linear infinite' }} />
-                                ) : (
-                                  <span style={{ color: 'var(--success-color)', fontWeight: 'bold' }}>✓</span>
-                                )}
+                                <span style={{ color: 'var(--success-color)', fontWeight: 'bold' }}>✓</span>
                                 <span>Thinking Process</span>
                               </div>
                               {thinking}
                             </div>
                           )}
 
-                          {/* Render Main Content (Structured View or Raw Live Stream) */}
-                          {structuredData ? (
-                            <div>
-                              <StructuredAnalysisView data={structuredData} />
-                              {isStreaming && (
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '1rem' }}>
-                                  <Loader2 size={12} className="animate-spin" style={{ animation: 'spin 1s linear infinite', color: 'var(--accent-color)' }} />
-                                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                                    Streaming additional perspectives...
-                                  </span>
-                                </div>
-                              )}
-                            </div>
-                          ) : (
-                            <div>
-                              {isStreaming ? (
-                                <div>
-                                  {jsonPart ? (
-                                    <div className="streaming-text" style={{
-                                      fontSize: '0.82rem',
-                                      lineHeight: 1.7,
-                                      color: 'var(--text-secondary)',
-                                      fontFamily: '"JetBrains Mono", "Fira Code", monospace',
-                                      whiteSpace: 'pre-wrap',
-                                      wordBreak: 'break-word',
-                                      maxHeight: '300px',
-                                      overflowY: 'auto',
-                                      padding: '0.75rem',
-                                      background: 'rgba(0,0,0,0.2)',
-                                      borderRadius: '8px',
-                                      border: '1px solid var(--border-color)'
-                                    }}>
-                                      {jsonPart}
-                                      <span className="streaming-cursor" style={{
-                                        display: 'inline-block',
-                                        width: '2px',
-                                        height: '1em',
-                                        background: 'var(--accent-color)',
-                                        marginLeft: '2px',
-                                        animation: 'blink 0.8s infinite',
-                                        verticalAlign: 'text-bottom'
-                                      }} />
-                                    </div>
-                                  ) : (
-                                    <div className="typing-indicator">
-                                      <Loader2 size={14} style={{ animation: 'spin 1s linear infinite', color: 'var(--accent-color)' }} />
-                                      <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Connecting to Ollama...</span>
-                                    </div>
-                                  )}
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.5rem' }}>
-                                    <Loader2 size={12} style={{ animation: 'spin 1s linear infinite', color: 'var(--accent-color)' }} />
-                                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                                      Streaming from local LLM... ({activeAnalysis.summary.length} chars)
-                                    </span>
-                                  </div>
-                                </div>
-                              ) : (
-                                renderAnalysisSummary(activeAnalysis.summary)
-                              )}
-                            </div>
-                          )}
+                          {/* Render Main Content (Structured View or Fallback) */}
+                          {renderAnalysisSummary(activeAnalysis.summary)}
                         </div>
                       );
                     })()}
@@ -1188,85 +1271,7 @@ create policy "Allow users to insert their own analyses" on public.analyses for 
             </>
           )}
 
-          {/* Stepper Shimmer Loading Chat Bubble */}
-          {loading && (
-            <>
-              {/* User Bubble placeholder */}
-              <div className="message-row user animate-fade-in">
-                <div className="chat-bubble user">
-                  <p style={{ fontSize: '0.9rem' }}>Running analysis on new link...</p>
-                </div>
-              </div>
 
-              {/* Shimmering AI Bubble */}
-              <div className="message-row ai animate-fade-in">
-                <div className="chat-bubble ai" style={{ width: '90%' }}>
-                  <div className="badge-row">
-                    <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--accent-color)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                      <Loader2 size={12} className="animate-spin" style={{ animation: 'spin 1s linear infinite' }} />
-                      <span>Analyzing Point of Views...</span>
-                    </span>
-                  </div>
-
-                  {/* Stepper Status Indicators */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', background: 'rgba(0,0,0,0.15)', padding: '0.75rem 1rem', borderRadius: '8px', border: '1px solid var(--border-color)', margin: '1rem 0' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem' }}>
-                      <div style={{
-                        width: '16px', height: '16px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.65rem',
-                        background: loadingStep >= 1 ? 'var(--accent-color)' : 'var(--border-color)',
-                        color: loadingStep >= 1 ? '#040811' : 'var(--text-muted)',
-                        fontWeight: 600
-                      }}>
-                        {loadingStep > 1 ? '✓' : '1'}
-                      </div>
-                      <span style={{ color: loadingStep === 1 ? 'var(--text-primary)' : 'var(--text-secondary)' }}>
-                        Fetching web link contents and scrubbing HTML tags...
-                      </span>
-                    </div>
-
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem' }}>
-                      <div style={{
-                        width: '16px', height: '16px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.65rem',
-                        background: loadingStep >= 2 ? 'var(--accent-color)' : 'var(--border-color)',
-                        color: loadingStep >= 2 ? '#040811' : 'var(--text-muted)',
-                        fontWeight: 600
-                      }}>
-                        {loadingStep > 2 ? '✓' : '2'}
-                      </div>
-                      <span style={{ color: loadingStep === 2 ? 'var(--text-primary)' : 'var(--text-secondary)' }}>
-                        Running local LLM stance synthesis...
-                      </span>
-                    </div>
-
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem' }}>
-                      <div style={{
-                        width: '16px', height: '16px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.65rem',
-                        background: loadingStep >= 3 ? 'var(--accent-color)' : 'var(--border-color)',
-                        color: loadingStep >= 3 ? '#040811' : 'var(--text-muted)',
-                        fontWeight: 600
-                      }}>
-                        {loadingStep > 3 ? '✓' : '3'}
-                      </div>
-                      <span style={{ color: loadingStep === 3 ? 'var(--text-primary)' : 'var(--text-secondary)' }}>
-                        Storing perspectives into database...
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Shimmer skeleton */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginTop: '1rem' }}>
-                    <div className="skeleton skeleton-title"></div>
-                    <div className="skeleton skeleton-text" style={{ width: '90%' }}></div>
-                    <div className="skeleton skeleton-text" style={{ width: '80%' }}></div>
-                    <div className="perspective-card-grid" style={{ marginTop: '0.5rem' }}>
-                      <div className="skeleton" style={{ height: '90px', borderRadius: '8px' }}></div>
-                      <div className="skeleton" style={{ height: '90px', borderRadius: '8px' }}></div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </>
-          )}
 
           {/* Server / API Errors */}
           {analysisError && (

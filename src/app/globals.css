@@ -633,3 +633,56 @@ a {
   background: var(--border-color);
   border-radius: 2px;
 }
+
+/* ============================================ */
+/* Thinking Loading Bar                         */
+/* ============================================ */
+
+.thinking-progress-container {
+  width: 100%;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 3px;
+  overflow: hidden;
+  position: relative;
+  margin-top: 1.25rem;
+  border: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.thinking-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #38bdf8, #818cf8, #38bdf8);
+  background-size: 200% 100%;
+  border-radius: 3px;
+  animation: 
+    fillProgress 60s cubic-bezier(0.1, 0.8, 0.1, 1) forwards,
+    moveGradient 2s linear infinite;
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.5);
+}
+
+.thinking-progress-text {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  margin-top: 0.75rem;
+  font-weight: 500;
+  text-align: center;
+}
+
+@keyframes fillProgress {
+  0% { width: 0%; }
+  5% { width: 10%; }
+  15% { width: 25%; }
+  30% { width: 45%; }
+  50% { width: 65%; }
+  70% { width: 80%; }
+  90% { width: 92%; }
+  100% { width: 98%; }
+}
+
+@keyframes moveGradient {
+  0% { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}
+
+

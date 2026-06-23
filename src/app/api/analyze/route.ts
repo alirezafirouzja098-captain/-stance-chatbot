@@ -53,30 +53,35 @@ export async function POST(req: Request) {
     }
 
     // 2. Query local Ollama — ZERO pre-flight checks, stream direct
-    const systemPrompt = `Return ONLY valid JSON matching the format schema. No markdown, no pre-text, no post-text.
+    const systemPrompt = `Adopt the persona of an objective, high-caliber news agency analyst. Your task is to perform an objective, news-specific stance analysis on current events. Use precise, journalistic terminology. Avoid sensationalism, bias, or subjective filler.
+
+Return ONLY valid JSON matching the format schema. No markdown, no pre-text, no post-text.
+
 CRITICAL INSTRUCTIONS:
-1. "overview": Write exactly ONE high-level overview bullet point summarizing the topic. Do NOT list group stances here.
-2. "perspectives": List exactly 3 distinct perspective groups/parties. For each group, specify their "name" and overall "stance" (POV summary), followed by exactly 2 bullet points in the "points" array.
-3. Descriptive details: Every "detail" field in both overview and perspectives MUST be at least 2 descriptive sentences long (at least 2 lines of text).
+1. "why": Write a direct, fact-driven summary of the core news hook, trigger, or current developments driving this debate. Avoid filler introductions. Must be concise (exactly 1-2 sentences).
+2. "overview": Write exactly ONE high-level overview bullet point summarizing the news context. Do NOT list group stances here.
+3. "perspectives": Identify exactly 2 distinct stakeholder groups in the news (e.g., official agencies, affected public, advocacy groups, industry representatives). For each group, state their "name" and their core position/argument ("stance" - exactly 1 concise sentence), followed by exactly 1 key point in the "points" array.
+4. Journalistic details: Every "detail" field in both overview and perspectives MUST explain specific claims or structural arguments, and be exactly 1 descriptive, highly informative sentence.
 
 Schema Format:
 {
   "title": "Topic Name",
+  "why": "Explanation of why this event or debate is happening. Exactly 1-2 sentences.",
   "overview": [
     {
       "bullet": "Brief topic summary",
-      "detail": "General context explanation. Must be at least 2 sentences.",
+      "detail": "General context explanation. Exactly 1 sentence.",
       "impact": "Overall significance"
     }
   ],
   "perspectives": [
     {
       "name": "Group Name",
-      "stance": "Summary of this group's overall point of view. Must be at least 2 sentences.",
+      "stance": "Summary of this group's overall point of view. Exactly 1 sentence.",
       "points": [
         {
           "bullet": "Stance bullet label",
-          "detail": "Detailed explanation of their reasoning. Must be at least 2 sentences.",
+          "detail": "Detailed explanation of their reasoning. Exactly 1 sentence.",
           "impact": "Consequence or effect"
         }
       ]
@@ -84,7 +89,7 @@ Schema Format:
   ]
 }`;
 
-    const userPrompt = `Analyze all major perspectives on: "${title}"\nContext: ${content.substring(0, 800)}`;
+    const userPrompt = `Perform a journalistic stance analysis on this news topic: "${title}"\nContext: ${content.substring(0, 800)}`;
 
     // Fire Ollama request immediately — no health check overhead
     try {
@@ -101,8 +106,8 @@ Schema Format:
           format: 'json',
           options: {
             temperature: 0.4,
-            num_predict: 1200,
-            num_ctx: 2048       // Smaller context window = faster KV cache
+            num_predict: 700,
+            num_ctx: 1536       // Smaller context window = faster KV cache
           }
         }),
       });
@@ -184,6 +189,7 @@ Schema Format:
     if (topicLower.includes('iran') || topicLower.includes('israel') || topicLower.includes('war') || topicLower.includes('middle east')) {
       responseData = {
         title: "Iran-Israel Conflict",
+        why: "Escalating regional tensions, direct military strikes, and the long-standing shadow war over influence and nuclear enrichment capabilities in the Middle East.",
         overview: [
           { bullet: "Decades-long rivalry turned direct confrontation", detail: "Proxy conflicts in Lebanon, Syria, and Gaza have recently escalated to direct military exchanges, including drone and missile strikes. This marked a historical shift from shadow warfare to direct, open confrontation between the two states.", impact: "Risk of wider regional war" },
           { bullet: "Nuclear program is the core flashpoint", detail: "Israel views Iran's nuclear enrichment capabilities as a direct existential danger that must be stopped at all costs. Iran asserts its program is strictly peaceful and represents a sovereign right to advanced technology.", impact: "Global non-proliferation at stake" },
@@ -235,6 +241,7 @@ Schema Format:
     } else if (topicLower.includes('ai') || topicLower.includes('artificial') || topicLower.includes('job') || topicLower.includes('creativ')) {
       responseData = {
         title: "AI vs Creative Jobs",
+        why: "The rapid rise of generative AI tools (like Midjourney and GPT-4) that produce professional content in seconds, threatening human creative roles and budgets.",
         overview: [
           { bullet: "Professional content generated in seconds", detail: "Generative AI tools like Midjourney, GPT-4, and Copilot can now produce graphics, text, and source code at a fraction of human turnaround time. This capability has disrupted traditional production cycles and forced industries to adapt almost overnight.", impact: "Substantial impact on current creative workflows" },
           { bullet: "Core debate: replacement or co-pilot", detail: "Some view AI as a powerful assistant that automates mundane tasks and frees humans for higher-level creativity. Others argue it directly displaces human workers by offering cheap, automated alternatives that clients prefer." },
@@ -278,6 +285,7 @@ Schema Format:
     } else if (topicLower.includes('bitcoin') || topicLower.includes('crypto') || topicLower.includes('regulat') || topicLower.includes('finance')) {
       responseData = {
         title: "Crypto Regulation Battle",
+        why: "Recent high-profile collapses of major crypto exchanges and fraud schemes that caused billions in retail investor losses and highlighted risks of illicit finance.",
         overview: [
           { bullet: "Accelerating global regulatory race", detail: "Recent high-profile exchange collapses and fraudulent schemes have pushed international regulators to draft strict compliance laws. This has introduced significant volatility as the market adjusts to the prospect of formal oversight.", impact: "Markets volatile as rules take shape" },
           { bullet: "Decentralization vs systemic control", detail: "The original ethos of cryptocurrency is built on trustless, peer-to-peer networks that operate independently of central banks. Modern regulation challenges this model by attempting to enforce centralized reporting requirements." },
@@ -321,6 +329,7 @@ Schema Format:
     } else if (topicLower.includes('work') || topicLower.includes('office') || topicLower.includes('remote')) {
       responseData = {
         title: "Remote vs Office Work",
+        why: "A fundamental shift in employee expectations for flexibility and work-life balance following the pandemic, contrasting with executives' demands for in-person collaboration.",
         overview: [
           { bullet: "Hybrid model as the new baseline", detail: "The pandemic proved that knowledge workers can remain productive outside of a traditional corporate office. This realization has forced companies to adopt hybrid arrangements as standard policy to retain top talent.", impact: "Hybrid models becoming the default" },
           { bullet: "Productivity metrics are highly debated", detail: "Executives often cite a decline in spontaneous collaboration and mentoring when teams are fully remote. Meanwhile, employees present studies showing higher output and longer working hours when commuting is eliminated." },
@@ -364,6 +373,7 @@ Schema Format:
     } else {
       responseData = {
         title: `Analysis: ${title}`,
+        why: "Competing incentives, technological changes, and shifting societal values that create policy disputes between different interest groups.",
         overview: [
           { bullet: "Division of public and institutional opinion", detail: "Almost all modern political, scientific, or social debates reveal deeply divided viewpoints with valid arguments on multiple sides. A single perspective rarely captures the full context or the historical background of the topic.", impact: "Public opinion divided" },
           { bullet: "Nuance is overshadowed by simplified media", detail: "Modern media channels and algorithms tend to simplify complex issues into binary conflicts for user engagement. Understanding the actual policy trade-offs requires analyzing secondary details and quiet concessions." },
