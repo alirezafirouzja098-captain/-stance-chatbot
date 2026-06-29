@@ -508,6 +508,9 @@ export default function ChatbotPage() {
         const { data, error } = await supabase.auth.signUp({
           email: authEmail,
           password: authPassword,
+          options: {
+            emailRedirectTo: window.location.origin,
+          },
         });
         if (error) throw error;
         if (data?.user && !data.session) {

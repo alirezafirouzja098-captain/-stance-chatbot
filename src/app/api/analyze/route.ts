@@ -153,11 +153,15 @@ Schema Format:
 
             // Save to Supabase if configured
             if (supabaseClient && fullText) {
-              supabaseClient.from('analyses').insert({
-                user_id: userId, link, source,
-                content: content.substring(0, 1000),
-                summary: fullText, perspectives: []
-              }).catch((e: any) => console.error('DB save error:', e));
+              try {
+                await supabaseClient.from('analyses').insert({
+                  user_id: userId, link, source,
+                  content: content.substring(0, 1000),
+                  summary: fullText, perspectives: []
+                });
+              } catch (e) {
+                console.error('DB save error:', e);
+              }
             }
           } catch (err) {
             controller.error(err);

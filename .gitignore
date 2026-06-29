@@ -2,3 +2,12 @@ node_modules/
 .next/
 .env
 .env.local
+
+# Python & news-rag ignores
+__pycache__/
+*.pyc
+venv/
+env/
+.venv/
+news-rag/qdrant_db/
+news-rag/.env
